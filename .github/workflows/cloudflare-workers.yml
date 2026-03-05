@@ -1,0 +1,51 @@
+name: Cloudflare Workers Deploy
+
+on:
+  push:
+    branches: [main, master]
+    paths:
+      - 'workers/**'
+      - 'wrangler.toml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  deployments: write
+
+jobs:
+  deploy-workers:
+    name: Deploy Cloudflare Workers
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'push'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '20'
+
+      - name: Deploy Workers
+        uses: cloudflare/wrangler-action@da0e0dfe58b7a431659754fdf3f186c529afbe65 # v3.14.1
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
+      - name: Verify Deployment
+        if: secrets.WORKER_URL != ''
+        run: |
+          if [ -n "${{ secrets.WORKER_URL }}" ]; then
+            HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" --max-time 30 "${{ secrets.WORKER_URL }}" || echo "000")
+            echo "Worker health check: $HTTP_STATUS"
+            if [ "$HTTP_STATUS" -ge 200 ] && [ "$HTTP_STATUS" -lt 400 ]; then
+              echo "Worker deployment verified"
+            else
+              echo "Warning: Worker returned status $HTTP_STATUS"
+            fi
+          fi

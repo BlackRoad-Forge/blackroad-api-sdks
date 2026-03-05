@@ -1,9 +1,13 @@
-name: 🚀 Auto Deploy
+name: Auto Deploy
 
 on:
   push:
     branches: [main, master]
   workflow_dispatch:
+
+permissions:
+  contents: read
+  deployments: write
 
 env:
   NODE_VERSION: '20'
@@ -15,11 +19,11 @@ jobs:
     outputs:
       service_type: ${{ steps.detect.outputs.service_type }}
       deploy_target: ${{ steps.detect.outputs.deploy_target }}
-    
+
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
-      
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
       - name: Detect Service Type
         id: detect
         run: |
@@ -32,7 +36,7 @@ jobs:
           elif [ -f "package.json" ]; then
             echo "service_type=node" >> $GITHUB_OUTPUT
             echo "deploy_target=railway" >> $GITHUB_OUTPUT
-          elif [ -f "requirements.txt" ]; then
+          elif [ -f "requirements.txt" ] || [ -f "pyproject.toml" ]; then
             echo "service_type=python" >> $GITHUB_OUTPUT
             echo "deploy_target=railway" >> $GITHUB_OUTPUT
           else
@@ -45,45 +49,48 @@ jobs:
     needs: detect-service
     if: needs.detect-service.outputs.deploy_target == 'cloudflare'
     runs-on: ubuntu-latest
-    
+
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
-      
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
       - name: Setup Node
-        uses: actions/setup-node@v4
+        if: hashFiles('package.json') != ''
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: 'npm'
-      
+
       - name: Install Dependencies
+        if: hashFiles('package.json') != ''
         run: npm ci
-      
+
       - name: Build
+        if: hashFiles('package.json') != ''
         run: npm run build
         env:
           NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: ${{ secrets.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY }}
-      
+
       - name: Deploy to Cloudflare Pages
-        uses: cloudflare/wrangler-action@v3
+        uses: cloudflare/wrangler-action@da0e0dfe58b7a431659754fdf3f186c529afbe65 # v3.14.1
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          command: pages deploy .next --project-name=${{ github.event.repository.name }}
+          command: pages deploy . --project-name=${{ github.event.repository.name }}
 
   deploy-railway:
     name: Deploy to Railway
     needs: detect-service
     if: needs.detect-service.outputs.deploy_target == 'railway'
     runs-on: ubuntu-latest
-    
+
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
-      
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
       - name: Install Railway CLI
         run: npm i -g @railway/cli
-      
+
       - name: Deploy to Railway
         run: railway up --service ${{ github.event.repository.name }}
         env:
@@ -94,22 +101,22 @@ jobs:
     needs: [deploy-cloudflare, deploy-railway]
     if: always() && (needs.deploy-cloudflare.result == 'success' || needs.deploy-railway.result == 'success')
     runs-on: ubuntu-latest
-    
+
     steps:
-      - name: Wait for Deployment
+      - name: Wait for Deployment Propagation
         run: sleep 30
-      
+
       - name: Check Health Endpoint
         run: |
+          if [ -z "${{ secrets.DEPLOY_URL }}" ]; then
+            echo "DEPLOY_URL not set, skipping health check"
+            exit 0
+          fi
           URL="${{ secrets.DEPLOY_URL }}/api/health"
-          curl -f $URL || exit 1
-      
-      - name: Notify Success
-        if: success()
-        run: echo "✅ Deployment successful and healthy!"
-      
-      - name: Notify Failure
-        if: failure()
-        run: |
-          echo "❌ Deployment health check failed!"
-          exit 1
+          HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" --max-time 30 "$URL" || echo "000")
+          echo "Health check status: $HTTP_STATUS"
+          if [ "$HTTP_STATUS" -ne 200 ]; then
+            echo "Health check failed with status $HTTP_STATUS"
+            exit 1
+          fi
+          echo "Deployment successful and healthy"
